@@ -32,6 +32,7 @@ def load_spectrum(filename, flag=None):
     """
     
     with fits.open(filename) as hdul:
+        target = hdul[0].header['TARGET']
         wave_arr, flux_arr, ferr_arr, order_arr = [], [], [], []
         for i, hdu in enumerate(hdul[1:-1]):
                         
@@ -39,21 +40,13 @@ def load_spectrum(filename, flag=None):
             wave = data['OPT_WAVE'] 
             flux = data['OPT_FLAM']
             ferr = data['OPT_FLAM_SIG']
-            # chi2 = data['OPT_CHI2']
             order = hdu.header['ECH_ORDER']
 
             if flag is not None: # Remove funky pixels
                 data = np.loadtxt(flag)
-                inds = np.nonzero( data[:,2] [data[:,0] == order] )
+                inds = np.nonzero( data[:,1] [data[:,0] == order] )
                 wave, flux, ferr = wave[inds], flux[inds], ferr[inds]
-                # chi2 = chi2[inds]
                 
-
-            # # Clip based on chi2
-            # threshold = 5
-            # inds = np.nonzero(chi2 < threshold)
-            # wave, flux, ferr = wave[inds], flux[inds], ferr[inds]
-            
             wave_arr.extend(wave)
             flux_arr.extend(flux)
             ferr_arr.extend(ferr)
@@ -68,7 +61,7 @@ def load_spectrum(filename, flag=None):
     wave_arr, flux_arr = wave_arr[inds], flux_arr[inds]
     ferr_arr, order_arr = ferr_arr[inds], order_arr[inds]
             
-    return wave_arr, flux_arr, ferr_arr, order_arr
+    return wave_arr, flux_arr, ferr_arr, order_arr, target
 
 def normalize_spectrum(modwave, modflux, obswave, obsflux):
     """
@@ -100,11 +93,9 @@ def trim_edges(fname):
     Edges of orders suffer from lower SNR. 
     """
 
-    wave, flux, ferr, order_arr = load_spectrum(fname)
+    wave, flux, ferr, order_arr, target = load_spectrum(fname)
 
     flag = []
-    order_flag = []
-    wave_flag = []        
 
     for i, order in enumerate(np.unique(order_arr)):
 
@@ -128,8 +119,12 @@ def trim_edges(fname):
         good_inds = np.nonzero( (ferr_ord < upbnd_ferr) *\
                                 (flux_ord < upbnd_flux) *\
                                 (flux_ord > lobnd_flux))[0]        
-        bad_inds = np.setdiff1d(np.arange(1024), good_inds)                
+        bad_inds = np.setdiff1d(np.arange(1024), good_inds)
+        flag_ord = np.zeros(1024)
+        flag_ord[bad_inds] = 1.
+        flag.append(flag_ord)
 
+        # Visualize
         fig = plt.figure(figsize=(10,10))
         plt.suptitle('ECH_ORDER = '+str(int(order)))        
         gs = fig.add_gridspec(3, 2, height_ratios=(1,1,2))
@@ -137,7 +132,6 @@ def trim_edges(fname):
         ax_1dflux = fig.add_subplot(gs[0,0])
         ax_1dferr = fig.add_subplot(gs[1,0])
         ax_2dhist = fig.add_subplot(gs[0:-1,1])
-
         ax.errorbar(wave_ord, flux_ord, ferr_ord, ls='', marker='.', c='k',
                     ms=0.5)        
         ax.errorbar(wave_ord[bad_inds], flux_ord[bad_inds], ferr_ord[bad_inds],
@@ -147,7 +141,6 @@ def trim_edges(fname):
         ax.axhline(lobnd_flux, ls='--', c='r', lw=1, alpha=0.8)        
         ax.set_ylabel('OPT_FLAM')
         ax.set_xlabel('OPT_WAVE')        
-
         ax_1dferr.hist(ferr_ord, bins=100)
         ax_1dferr.set_xlabel('OPT_FLAM_SIG')        
         ax_1dferr.axvline(q1_ferr, ls='--', c='k')
@@ -155,7 +148,6 @@ def trim_edges(fname):
         ax_1dferr.axvline(upbnd_ferr, ls='--', c='r')
         ax_1dferr.text(q1_ferr, ax_1dferr.get_ylim()[1], ' 25th percentile ', ha='right', va='top')
         ax_1dferr.text(q3_ferr, ax_1dferr.get_ylim()[1], ' 75th percentile ', ha='left', va='top')
-
         ax_1dflux.hist(flux_ord, bins=100)
         ax_1dflux.axvline(q1_flux, ls='--', c='k')
         ax_1dflux.axvline(q3_flux, ls='--', c='k')
@@ -164,11 +156,6 @@ def trim_edges(fname):
         ax_1dflux.set_xlabel('OPT_FLAM')
         ax_1dflux.text(q1_flux, ax_1dflux.get_ylim()[1], ' 25th percentile ', ha='right', va='top')
         ax_1dflux.text(q3_flux, ax_1dflux.get_ylim()[1], ' 75th percentile ', ha='left', va='top')        
-        
-        # x = np.linspace(np.min(ferr_ord), np.max(ferr_ord), 1000)
-        # ax_2dhist.plot(x, p[0]*x + p[1], '-k')
-        # x = np.linspace(np.min(ferr_ord), np.max(ferr_ord), 1000)
-        # ax_2dhist.plot(x, p[0]*x + p[1] - p[0]*0.5*np.std(ferr_ord), '--k')
         ax_2dhist.plot(ferr_ord, flux_ord, '.', alpha=0.75, ms=2)
         ax_2dhist.plot(ferr_ord[bad_inds], flux_ord[bad_inds], 'xr', alpha=0.75, ms=2)     
         ax_2dhist.set_xlabel('OPT_FLAM_SIG')
@@ -178,11 +165,11 @@ def trim_edges(fname):
         outf = 'Plots/'+fname.split('_')[-3]+'_ECH_ORDER_'+str(int(order))+'.png'
         plt.savefig(outf)
         print('Saved '+outf)
-        plt.close()        
-
+        plt.close()
         
+    return np.array(flag)
 
-def outlier_pixels(standard_MagE, STD_NAME='BPM16274'):
+def outlier_pixels(standard_MagE):
     """
     Identify pixels of MagE spectrum with significant deviation from ESO
     standard, due to detector hot or dead pixels, cosmic rays, or other
@@ -192,18 +179,19 @@ def outlier_pixels(standard_MagE, STD_NAME='BPM16274'):
     import pypeit
     import pandas as pd
     from scipy.interpolate import CubicSpline        
+
+    # Load MagE standard
+    wave, flux, ferr, order_arr, target = load_spectrum(standard_MagE)    
     
     esofil_dir = pypeit.__file__[:-11]+"data/standards/esofil/"
 
     # esofile_info.columns = ['File', 'Name', 'RA_2000', 'DEC_2000']
     esofil_info = pd.read_csv(esofil_dir+'esofil_info.txt', comment='#', sep='\s+')
     standard_file = esofil_dir + \
-        esofil_info[esofil_info['Name'] == STD_NAME]['File'].values[0]
-    print(esofil_info[esofil_info['Name'] == STD_NAME])
+        esofil_info[esofil_info['Name'] == target]['File'].values[0]
+    print(esofil_info[esofil_info['Name'] == target])
     
     wave_eso, flux_eso, ferr_eso, _ = np.loadtxt(standard_file).T # wave flux ferr
-    
-    wave, flux, ferr, order_arr = load_spectrum(standard_MagE)
 
     # >> Normalize ESO spectrum
     flux_eso = normalize_spectrum(wave_eso, flux_eso, wave, flux)
@@ -212,8 +200,6 @@ def outlier_pixels(standard_MagE, STD_NAME='BPM16274'):
     spline = CubicSpline(wave_eso, flux_eso, extrapolate=False)
     
     flag = []
-    order_flag = []
-    wave_flag = []    
 
     for i, order in enumerate(np.unique(order_arr)):
 
@@ -227,82 +213,46 @@ def outlier_pixels(standard_MagE, STD_NAME='BPM16274'):
         flux_spl = spline(wave_ord)
 
         # Compute quartiles
-        q3_ferr, q1_ferr = np.percentile(ferr_ord, [75, 25])
-        q3_flux, q1_flux = np.percentile(flux_ord, [75, 25])
-        iqr_ferr = (q3_ferr - q1_ferr)/2        
-        iqr_flux = (q3_flux - q1_flux)/2
+        q3, q1 = np.percentile(flux_ord, [75, 25])
+        iqr = (q3 - q1)/2
 
-        # Compute upper and lower bounds on FLAM and FLAM_SIG
-        upbnd_ferr = q3_ferr
-        upbnd_flux = flux_spl + 7*iqr_flux
-        lobnd_flux = flux_spl - 12*iqr_flux
-        good_inds = np.nonzero( (ferr_ord < upbnd_ferr) *\
-                                (flux_ord < upbnd_flux) *\
-                                (flux_ord > lobnd_flux))[0]        
-        bad_inds = np.setdiff1d(np.arange(1024), good_inds)                
-
-        fig = plt.figure(figsize=(10,10))
-        plt.suptitle('ECH_ORDER = '+str(int(order)))        
-        gs = fig.add_gridspec(3, 2, height_ratios=(1,1,2))
-        ax = fig.add_subplot(gs[2,:])
-        ax_1dflux = fig.add_subplot(gs[0,0])
-        ax_1dferr = fig.add_subplot(gs[1,0])
-        ax_2dhist = fig.add_subplot(gs[0:-1,1])
-
-        ax.errorbar(wave_ord, flux_ord, ferr_ord, ls='', marker='.', c='k',
-                    ms=0.5)        
-        ax.errorbar(wave_ord[bad_inds], flux_ord[bad_inds], ferr_ord[bad_inds],
-                    ls='', marker='x', c='r', ms=0.5)
-        ax.plot(wave_ord, flux_spl, '-b', lw=1, alpha=0.8)
-        ax.plot(wave_ord, upbnd_flux, '--r', lw=1, alpha=0.8)
-        ax.plot(wave_ord, lobnd_flux, '--r', lw=1, alpha=0.8)        
-        
-        inds = np.nonzero( (wave_eso > np.min(wave_ord)) * (wave_eso < np.max(wave_ord)) )
-        ax.errorbar(wave_eso[inds], flux_eso[inds], ferr_eso[inds], ls='', c='b', alpha=0.8)        
-        ax.set_ylabel('OPT_FLAM')
-        ax.set_xlabel('OPT_WAVE')        
-
-        ax_1dferr.hist(ferr_ord, bins=100)
-        ax_1dferr.set_xlabel('OPT_FLAM_SIG')        
-        ax_1dferr.axvline(q1_ferr, ls='--', c='k')
-        ax_1dferr.axvline(q3_ferr, ls='--', c='k')
-        ax_1dferr.axvline(upbnd_ferr, ls='--', c='r')
-        ax_1dferr.text(q1_ferr, ax_1dferr.get_ylim()[1], ' 25th percentile ', ha='right', va='top')
-        ax_1dferr.text(q3_ferr, ax_1dferr.get_ylim()[1], ' 75th percentile ', ha='left', va='top')
-
-        ax_1dflux.hist(flux_ord, bins=100)
-        ax_1dflux.axvline(q1_flux, ls='--', c='k')
-        ax_1dflux.axvline(q3_flux, ls='--', c='k')
-        ax_1dflux.axvline(np.median(upbnd_flux), ls='--', c='r')
-        ax_1dflux.axvline(np.median(lobnd_flux), ls='--', c='r')
-        ax_1dflux.set_xlabel('OPT_FLAM')
-        ax_1dflux.text(q1_flux, ax_1dflux.get_ylim()[1], ' 25th percentile ', ha='right', va='top')
-        ax_1dflux.text(q3_flux, ax_1dflux.get_ylim()[1], ' 75th percentile ', ha='left', va='top')        
-        
-        # x = np.linspace(np.min(ferr_ord), np.max(ferr_ord), 1000)
-        # ax_2dhist.plot(x, p[0]*x + p[1], '-k')
-        # x = np.linspace(np.min(ferr_ord), np.max(ferr_ord), 1000)
-        # ax_2dhist.plot(x, p[0]*x + p[1] - p[0]*0.5*np.std(ferr_ord), '--k')
-        ax_2dhist.plot(ferr_ord, flux_ord, '.', alpha=0.75, ms=2)
-        ax_2dhist.plot(ferr_ord[bad_inds], flux_ord[bad_inds], 'xr', alpha=0.75, ms=2)     
-        ax_2dhist.set_xlabel('OPT_FLAM_SIG')
-        ax_2dhist.set_ylabel('OPT_FLAM')
-        ax_2dhist.set_ylim([np.min(flux_ord), np.max(flux_ord)])
-        plt.tight_layout()
-        plt.savefig('Plots/outlier_ech_order_'+str(int(order))+'.png')        
-        plt.close()        
+        # Computer upper and lower bounds
+        upbnd = flux_spl + 7*iqr
+        lobnd = flux_spl - 12*iqr
+        good_inds = np.nonzero((flux_ord < upbnd)*(flux_ord>lobnd))[0]
+        bad_inds = np.setdiff1d(np.arange(1024), good_inds)
         
         flag_ord = np.zeros(1024)
-        flag_ord[bad_inds] = 1.        
-        flag.extend(flag_ord)
-        order_flag.extend(np.ones(len(flag_ord))*order)
-        wave_flag.extend(wave_ord)
+        flag_ord[bad_inds] = 1.
+        flag.append(flag_ord)
 
+        # Visualize
+        fig, ax = plt.subplots(nrows=2, figsize=(10,10))
+        plt.suptitle('ECH_ORDER = '+str(int(order)))
+        ax[0].hist(flux_ord, bins=100)
+        ax[0].axvline(q1, ls='--', c='k')
+        ax[0].axvline(q3, ls='--', c='k')
+        ax[0].axvline(np.median(upbnd), ls='--', c='r')
+        ax[0].axvline(np.median(lobnd), ls='--', c='r')
+        ax[0].set_xlabel('F_lambda')
+        ax[0].text(q1, ax[0].get_ylim()[1], ' 25th percentile ', ha='right', va='top')
+        ax[0].text(q3, ax[0].get_ylim()[1], ' 75th percentile ', ha='left', va='top')
+        ax[1].errorbar(wave_ord, flux_ord, ferr_ord, ls='', marker='.', c='k', ms=0.5)
+        ax[1].errorbar(wave_ord[bad_inds], flux_ord[bad_inds], ferr_ord[bad_inds],
+                       ls='', marker='.', c='r', ms=0.5)
+        ax[1].plot(wave_ord, flux_spl, '-b', lw=1, alpha=0.8)
+        ax[1].plot(wave_ord, upbnd, '--r', lw=1, alpha=0.8)
+        ax[1].plot(wave_ord, lobnd, '--r', lw=1, alpha=0.8)
+        inds = np.nonzero( (wave_eso > np.min(wave_ord)) * (wave_eso < np.max(wave_ord)) )
+        ax[1].errorbar(wave_eso[inds], flux_eso[inds], ferr_eso[inds], ls='', c='b', alpha=0.8)
+        ax[1].set_ylabel('F_lambda')
+        ax[1].set_xlabel('Wavelength (Angstroms)')
+        plt.tight_layout()
+        outf = 'Plots/STD_'+target+'_ECH_ORDER_'+str(int(order))+'.png'
+        plt.savefig(outf)
+        print('Saved '+outf)
+        plt.close()
 
-    flag = np.array(flag).astype('int')
-    np.savetxt('Analysis/outlier_pix.txt', 
-               np.array([ order_flag, wave_flag, flag ]).T, 
-               header='ECH_ORDER WAVELENGTH FLAG')
-    
+    return np.array(flag) # shape = (num orders, num pixels)
     
 
