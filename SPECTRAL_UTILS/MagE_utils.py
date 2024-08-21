@@ -32,7 +32,7 @@ def load_spectrum(filename, flag=None):
     """
     
     with fits.open(filename) as hdul:
-        target = hdul[0].header['TARGET']
+        header = hdul[0].header
         wave_arr, flux_arr, ferr_arr, order_arr = [], [], [], []
         for i, hdu in enumerate(hdul[1:-1]):
                         
@@ -43,8 +43,8 @@ def load_spectrum(filename, flag=None):
             order = hdu.header['ECH_ORDER']
 
             if flag is not None: # Remove funky pixels
-                data = np.loadtxt(flag)
-                inds = np.nonzero( data[:,1] [data[:,0] == order] )
+                data = np.loadtxt(flag, delimiter=',', skiprows=1)
+                inds = np.nonzero( data[data[:,0] == order][0][1:] )
                 wave, flux, ferr = wave[inds], flux[inds], ferr[inds]
                 
             wave_arr.extend(wave)
@@ -61,9 +61,9 @@ def load_spectrum(filename, flag=None):
     wave_arr, flux_arr = wave_arr[inds], flux_arr[inds]
     ferr_arr, order_arr = ferr_arr[inds], order_arr[inds]
             
-    return wave_arr, flux_arr, ferr_arr, order_arr, target
+    return wave_arr, flux_arr, ferr_arr, order_arr, header
 
-def normalize_spectrum(modwave, modflux, obswave, obsflux):
+def normalize_spectrum(modwave, modflux, obswave, obsflux, obsferr):
     """
     Normalize a model spectrum by matching the median and standard deviation of
     the data.
@@ -74,7 +74,7 @@ def normalize_spectrum(modwave, modflux, obswave, obsflux):
     intwave = np.linspace(np.min(obswave), np.max(obswave), 1000)
     intobsflux = np.interp(intwave, obswave, obsflux)
     intmodflux = np.interp(intwave, modwave, modflux)
-
+    
     # Standardize model to have standard deviation of 1 and median of 0
     modflux = (modflux - np.median(intmodflux)) / np.std(intmodflux)
     intmodflux = (intmodflux - np.median(intmodflux)) / np.std(intmodflux)
@@ -88,16 +88,17 @@ def normalize_spectrum(modwave, modflux, obswave, obsflux):
     
     return modflux
 
-def trim_edges(fname):
+def sigma_clipping(fname):
     """
     Edges of orders suffer from lower SNR. 
     """
 
-    wave, flux, ferr, order_arr, target = load_spectrum(fname)
-
+    wave, flux, ferr, order_arr, header = load_spectrum(fname)
+    order_names = np.unique(order_arr)
+    
     flag = []
 
-    for i, order in enumerate(np.unique(order_arr)):
+    for i, order in enumerate(order_names):
 
         # Grab data points in order
         inds_ord = np.array(order_arr == order)
@@ -167,41 +168,44 @@ def trim_edges(fname):
         print('Saved '+outf)
         plt.close()
         
-    return np.array(flag)
+    return np.array(flag), order_names
 
-def outlier_pixels(standard_MagE):
+def outlier_pixels(standard_MagE, standard_true):
     """
     Identify pixels of MagE spectrum with significant deviation from ESO
     standard, due to detector hot or dead pixels, cosmic rays, or other
     instrumental artifacts.
     """
 
-    import pypeit
+    # import pypeit
     import pandas as pd
     from scipy.interpolate import CubicSpline        
 
     # Load MagE standard
-    wave, flux, ferr, order_arr, target = load_spectrum(standard_MagE)    
-    
-    esofil_dir = pypeit.__file__[:-11]+"data/standards/esofil/"
+    wave, flux, ferr, order_arr, header = load_spectrum(standard_MagE)
+    target = header['TARGET']
+    order_ids = np.unique(order_arr)
 
-    # esofile_info.columns = ['File', 'Name', 'RA_2000', 'DEC_2000']
-    esofil_info = pd.read_csv(esofil_dir+'esofil_info.txt', comment='#', sep='\s+')
-    standard_file = esofil_dir + \
-        esofil_info[esofil_info['Name'] == target]['File'].values[0]
-    print(esofil_info[esofil_info['Name'] == target])
+    #  # Remove dead pixels
+    # inds = np.nonzero( flux )
+    # wave, flux, ferr, order_arr = wave[inds], flux[inds], ferr[inds], order_arr[inds]
     
-    wave_eso, flux_eso, ferr_eso, _ = np.loadtxt(standard_file).T # wave flux ferr
+    # esofil_dir = pypeit.__file__[:-11]+"data/standards/esofil/"
 
-    # >> Normalize ESO spectrum
-    flux_eso = normalize_spectrum(wave_eso, flux_eso, wave, flux)
+    # # esofile_info.columns = ['File', 'Name', 'RA_2000', 'DEC_2000']
+    # esofil_info = pd.read_csv(esofil_dir+'esofil_info.txt', comment='#', sep='\s+')
+    # standard_file = esofil_dir + \
+    #     esofil_info[esofil_info['Name'] == target]['File'].values[0]
+    # print(esofil_info[esofil_info['Name'] == target])
     
+    wave_true, flux_true, ferr_true = np.loadtxt(standard_true).T # wave flux ferr
+
     # >> Fit spline to ESO spectrum
-    spline = CubicSpline(wave_eso, flux_eso, extrapolate=False)
+    spline = CubicSpline(wave_true, flux_true, extrapolate=False)
     
     flag = []
 
-    for i, order in enumerate(np.unique(order_arr)):
+    for i, order in enumerate(order_ids):
 
         # Grab data points in order
         inds_ord = np.array(order_arr == order)
@@ -211,6 +215,9 @@ def outlier_pixels(standard_MagE):
 
         # Evaluate spline for current order
         flux_spl = spline(wave_ord)
+        
+        # >> Normalize true spectrum
+        flux_spl = normalize_spectrum(wave_ord, flux_spl, wave_ord, flux_ord, ferr_ord)         
 
         # Compute quartiles
         q3, q1 = np.percentile(flux_ord, [75, 25])
@@ -243,8 +250,8 @@ def outlier_pixels(standard_MagE):
         ax[1].plot(wave_ord, flux_spl, '-b', lw=1, alpha=0.8)
         ax[1].plot(wave_ord, upbnd, '--r', lw=1, alpha=0.8)
         ax[1].plot(wave_ord, lobnd, '--r', lw=1, alpha=0.8)
-        inds = np.nonzero( (wave_eso > np.min(wave_ord)) * (wave_eso < np.max(wave_ord)) )
-        ax[1].errorbar(wave_eso[inds], flux_eso[inds], ferr_eso[inds], ls='', c='b', alpha=0.8)
+        # inds = np.nonzero( (wave_true > np.min(wave_ord)) * (wave_true < np.max(wave_ord)) )
+        # ax[1].errorbar(wave_true[inds], flux_true[inds], ferr_true[inds], ls='', c='b', alpha=0.8)
         ax[1].set_ylabel('F_lambda')
         ax[1].set_xlabel('Wavelength (Angstroms)')
         plt.tight_layout()
@@ -253,6 +260,22 @@ def outlier_pixels(standard_MagE):
         print('Saved '+outf)
         plt.close()
 
-    return np.array(flag) # shape = (num orders, num pixels)
+    return np.array(flag), order_ids
+
+def join_flag(flag1, flag2):
+
+    flag = np.zeros(flag1.shape)
+    flag[np.nonzero(flag1)] = 1.
+    flag[np.nonzero(flag2)] = 1.
+
+    return flag
     
+
+def save_flag(outf, flag, order):
+    cols = ['ECH_ORD'] + ['PIX_'+str(i) for i in range(1,1025)]
+    header = ','.join(cols)
+    
+    data = np.insert(flag, 0, order, axis=1)
+    np.savetxt(outf, data, header=header, delimiter=',')
+    print('Saved '+outf)
 
