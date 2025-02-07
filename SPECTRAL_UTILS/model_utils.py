@@ -100,7 +100,7 @@ def broadening(obswave, linwave, modwave, modflux, vsini, R=7000, epsilon=0.5):
     linwave = linwave[inds]
     
     # Interpolate model grid to observed wavelength grid
-    windex = np.interp(obswave, linwave, np.arange(len(linwave)))
+    windex = np.interp(obswave, linwave, np.arange(len(linwave))) # might be fishy
     modflux = map_coordinates(modflux, np.array([windex]))
 
     return modflux

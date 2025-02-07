@@ -69,25 +69,36 @@ def multi_line_model(wave, wave0, rv, slope, const, amp_L, fhwm_L, fwhm_G):
                                 slope, const ) )
     return np.array(flux)
     
-def normalize_continuum(wave, flux, ferr=None, deg=1, pad=20):
-    
-    from scipy.optimize import curve_fit
+def normalize_continuum(wave, flux, ferr=None, deg=1, pad=20, wave0=None):
+
+    if wave0 is None:
+        wave0 = np.median(wave)
     
     # Extract continuum region without absorption line
-    inds = np.nonzero( (wave < np.min(wave)+pad) + (wave > np.max(wave)-pad) )
+    inds = np.nonzero( np.abs(wave - wave0) > pad )
     wave_cont, flux_cont = wave[inds], flux[inds]
     if ferr is not None:
         ferr_cont = ferr[inds]
     else:
         ferr_cont = None
-    
-    # Fit continuum
-    popt, pcov = curve_fit(linear_model, wave_cont, flux_cont, sigma=ferr_cont)
-    continuum = linear_model(wave, popt[0], popt[1])    
 
-    # Normalize
-    flux = flux / continuum
+    # Fit continuum
+    p = np.polyfit(wave_cont, flux_cont, deg)
     
+    # Normalize
+    continuum = np.poly1d(p)(wave)
+
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # plt.plot(wave, flux, '-k')
+    # plt.plot(wave_cont, flux_cont, '-b')
+    # plt.plot(wave, continuum, '-r')
+    # plt.savefig('/home/echickle/foo.png')
+    # import pdb
+    # pdb.set_trace()
+    
+    flux = flux / continuum
+        
     if ferr is None:
         return flux
     else:
